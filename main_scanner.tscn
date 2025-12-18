@@ -1,0 +1,83 @@
+[gd_scene load_steps=4 format=3 uid="uid://dx7wv5qxy3yvj"]
+
+[ext_resource type="Script" uid="uid://cixcp60dfdev7" path="res://scanner.gd" id="1_dkp2v"]
+[ext_resource type="Script" uid="uid://c27qmqw4llxpt" path="res://drop_zone.gd" id="2_tkdrm"]
+
+[sub_resource type="LabelSettings" id="LabelSettings_tkdrm"]
+font_size = 36
+
+[node name="MainScanner" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_dkp2v")
+
+[node name="Background" type="ColorRect" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0, 0.54509807, 1, 1)
+
+[node name="DropZone" type="Panel" parent="."]
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -400.0
+offset_top = -300.0
+offset_right = 400.0
+offset_bottom = 100.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("2_tkdrm")
+
+[node name="Label" type="Label" parent="DropZone"]
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -169.5
+offset_top = -25.0
+offset_right = 169.5
+offset_bottom = 25.0
+grow_horizontal = 2
+grow_vertical = 2
+text = "Mod 文件夹拖到这里"
+label_settings = SubResource("LabelSettings_tkdrm")
+
+[node name="ResultList" type="ScrollContainer" parent="."]
+layout_mode = 1
+anchors_preset = 7
+anchor_left = 0.5
+anchor_top = 1.0
+anchor_right = 0.5
+anchor_bottom = 1.0
+offset_left = -350.0
+offset_top = -200.0
+offset_right = 350.0
+grow_horizontal = 2
+grow_vertical = 0
+
+[node name="VBoxContainer" type="VBoxContainer" parent="ResultList"]
+layout_mode = 2
+
+[node name="StatusLabel" type="Label" parent="."]
+layout_mode = 0
+offset_right = 40.0
+offset_bottom = 23.0
+text = "正在扫描..."
+
+[node name="Mascot" type="TextureRect" parent="."]
+layout_mode = 0
+offset_right = 40.0
+offset_bottom = 40.0
