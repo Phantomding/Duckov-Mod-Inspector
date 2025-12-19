@@ -55,22 +55,6 @@ grow_vertical = 2
 text = "Mod 文件夹拖到这里"
 label_settings = SubResource("LabelSettings_tkdrm")
 
-[node name="ResultList" type="ScrollContainer" parent="."]
-layout_mode = 1
-anchors_preset = 7
-anchor_left = 0.5
-anchor_top = 1.0
-anchor_right = 0.5
-anchor_bottom = 1.0
-offset_left = -350.0
-offset_top = -200.0
-offset_right = 350.0
-grow_horizontal = 2
-grow_vertical = 0
-
-[node name="VBoxContainer" type="VBoxContainer" parent="ResultList"]
-layout_mode = 2
-
 [node name="StatusLabel" type="Label" parent="."]
 layout_mode = 0
 offset_right = 40.0
@@ -81,3 +65,23 @@ text = "正在扫描..."
 layout_mode = 0
 offset_right = 40.0
 offset_bottom = 40.0
+
+[node name="ResultScroll" type="ScrollContainer" parent="."]
+layout_mode = 1
+anchors_preset = 7
+anchor_left = 0.5
+anchor_top = 1.0
+anchor_right = 0.5
+anchor_bottom = 1.0
+offset_left = -300.0
+offset_top = -200.0
+offset_right = 300.0
+grow_horizontal = 2
+grow_vertical = 0
+
+[node name="ResultText" type="RichTextLabel" parent="ResultScroll"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+bbcode_enabled = true
+fit_content = true
