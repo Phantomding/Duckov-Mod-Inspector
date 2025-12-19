@@ -10,7 +10,8 @@ config_version=5
 
 [application]
 
-config/name="DuckovModScanner"
+config/name="Duckov Mod Inspector"
+config/description="Duckov Mod Analysis Tool"
 run/main_scene="uid://dx7wv5qxy3yvj"
 config/features=PackedStringArray("4.5", "GL Compatibility")
 config/icon="res://icon.svg"
