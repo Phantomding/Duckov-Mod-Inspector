@@ -97,7 +97,7 @@ var compiled_rules = {}
 # === 1. 初始化界面 (版本号 + 免责声明) ===
 func _ready():
 	# A. 设置窗口标题和版本号
-	DisplayServer.window_set_title("Duckov Security Scanner v1.0.0 (Beta)")
+	DisplayServer.window_set_title("Duckov Security Scanner v1.0.1 (Beta)")
 	
 	# B. 动态添加免责声明 (在窗口底部生成一行小字)
 	var disclaimer = Label.new()
@@ -223,96 +223,97 @@ func extract_readable_text(raw_bytes: PackedByteArray) -> String:
 			safe_bytes.append(b)
 	return safe_bytes.get_string_from_ascii()
 
-# --- 核心功能：扫描单个文件 ---
 func scan_single_file(path: String) -> Dictionary:
 	var file_obj = FileAccess.open(path, FileAccess.READ)
 	if not file_obj: return {"score": 0, "details": []}
 	
 	var file_len = file_obj.get_length()
 	if file_len == 0: return {"score": 0, "details": []}
-	if file_len > MAX_FILE_SIZE: return {"score": 0, "details": []} # 跳过大文件
+	if file_len > MAX_FILE_SIZE: return {"score": 0, "details": []} # 跳过超大文件
 	
-	# === 1. 指纹白名单 (最优先) ===
 	var file_name = path.get_file()
-	var current_md5 = FileAccess.get_md5(path)
-	
-	if file_name in safe_file_hashes:
-		if current_md5 in safe_file_hashes[file_name]:
-			return {"score": 0, "details": []} # 官方正版，直接放行
-	
-	# === 2. 只有 DLL 才需要进行的深度检查 ===
-	var is_dll = path.get_extension().to_lower() == "dll"
-	var content_bytes = file_obj.get_buffer(file_len)
-	var content_cleaned = extract_readable_text(content_bytes)
-	
 	var current_score = 0
 	var found_details = []
 	
+	# === 1. 读取并清洗内容 ===
+	var content_bytes = file_obj.get_buffer(file_len)
+	var content_cleaned = extract_readable_text(content_bytes)
+	var is_dll = path.get_extension().to_lower() == "dll"
+	
+	# === 2. DLL 深度结构检查 (仅针对 DLL) ===
 	if is_dll:
-		# --- A. 良民证检查 (你的现有逻辑) ---
-		var valid_markers = ["UnityEngine", "Assembly-CSharp", "BepInEx", "0Harmony", "mscorlib"]
-		var looks_like_unity_mod = false
-		for marker in valid_markers:
-			if marker in content_cleaned:
-				looks_like_unity_mod = true
-				break
+		# --- A. 身份验证 (.NET 签名) ---
+		var has_dotnet_magic = "BSJB" in content_cleaned
 		
-		# --- B. 🆕 违禁品搜身 (Forbidden Imports Check) ---
-		var has_forbidden_gear = false
+		# --- B. 伪装检测 (C++ 原生病毒) ---
+		if not has_dotnet_magic:
+			# 绝大多数 Unity Mod 必须是 C# (带BSJB)。
+			# 如果是 DLL 但没有 BSJB，极大概率是伪装成 Mod 的原生病毒 (Scav 1.5 特征)
+			current_score += 100
+			found_details.append("🛑 伪装文件: 缺失 .NET 签名 (BSJB)")
+			found_details.append("   └─ 解析: 这是一个原生二进制文件(C++/Native)，而不是正常的 Mod。")
 		
-		for bad_api in forbidden_imports:
-			if bad_api in content_cleaned:
-				has_forbidden_gear = true
-				var weight = forbidden_imports[bad_api]
-				current_score += weight
-				found_details.append("☢️ 违禁品检测: 发现底层系统调用 (%s)" % bad_api)
-				
-				# 如果它既有 UnityEngine 又有 Kernel32，说明是高级伪装
-				if looks_like_unity_mod:
-					current_score += 50 # 罪加一等
-					found_details.append("   └─ 伪装警报: 该文件伪装成 Unity Mod，却在调用系统内核！")
-		
-		# --- 综合判定 ---
-		
-		# 情况 1: 没良民证 (C++ 病毒)
-		if not looks_like_unity_mod:
-			current_score += 50
-			found_details.append("⚠️ 异常结构: 未检测到 Unity 引用，疑似原生程序")
-		
-		# 情况 2: 有良民证，但带了违禁品 (特洛伊木马)
-		if looks_like_unity_mod and has_forbidden_gear:
-			found_details.append("🛑 混合威胁: 这是一个持有'良民证'的间谍！")
+		else:
+			# --- C. 混淆/加壳检测 (信息密度) ---
+			# 检查是否包含 Unity/Mod 开发的常用库
+			var valid_markers = ["UnityEngine", "Assembly-CSharp", "BepInEx", "0Harmony", "System.Runtime", "mscorlib", "System"]
+			var looks_like_unity_mod = false
+			for marker in valid_markers:
+				if marker in content_cleaned:
+					looks_like_unity_mod = true
+					break
 			
-		# 情况 3: 只有良民证，没违禁品 -> 才是真正的好人
-		
-		# --- B. 信息密度检查 (破解伪装的核心) ---
-		# 计算：清洗后的可读字符长度 / 文件总长度
-		# 正常的 C# DLL 通常在 0.05 (5%) 到 0.3 (30%) 之间
-		# 加壳/混淆/原生病毒通常极低，低于 0.01 (1%)
-		var readability_ratio = float(content_cleaned.length()) / float(file_len)
-		
-		# print("调试: ", file_name, " 可读率: ", readability_ratio, " Unity特征: ", looks_like_unity_mod)
-		
-		if not looks_like_unity_mod:
-			# 既没有 Unity 特征，也不是 Harmony
-			current_score += 50
-			found_details.append("⚠️ 异常结构: 未检测到任何 Unity/Mod 常用库引用")
-		
-		# 阈值设为 1.5% (0.015)。如果一个 DLL 里只有不到 1.5% 是人话，那它肯定有问题。
-		if readability_ratio < 0.015: 
-			current_score += 80
-			found_details.append("🛑 高度混淆/加密检测")
-			found_details.append("   └─ 证据: 文件可读信息密度极低 (%.2f%%)，疑似加壳或原生病毒" % (readability_ratio * 100))
+			# 计算可读文本占比
+			var readability_ratio = float(content_cleaned.length()) / float(file_len)
 			
-	# === 3. 常规正则扫描 (保持不变) ===
+			# 如果既没引用 Unity 库，可读性又极低 (<1.5%)，说明被强力混淆或加密了
+			if not looks_like_unity_mod and readability_ratio < 0.015:
+				current_score += 80
+				found_details.append("🛑 高度混淆/加密检测")
+				found_details.append("   └─ 证据: 文件可读信息密度极低 (%.2f%%)，疑似加壳木马" % (readability_ratio * 100))
+
+			# --- D. 🛡️ 违禁品搜身 (含 Harmony 豁免权) ---
+			# 1. 判断是否为真正的 Harmony 库 (防止改名伪装)
+			# 条件：文件名含 harmony 且 内容里确实有 Harmony 字符串
+			var is_real_harmony = "harmony" in file_name.to_lower() and ("Harmony" in content_cleaned or "0Harmony" in content_cleaned)
+			
+			for bad_api in forbidden_imports:
+				if bad_api in content_cleaned:
+					# [豁免逻辑] 如果是真 Harmony，允许它调用内存操作函数 (因为它是补丁库)
+					if is_real_harmony and bad_api in ["VirtualProtect", "GetProcAddress", "KERNEL32.dll", "LoadLibrary"]:
+						# print("DEBUG: 已豁免 Harmony 的底层操作: ", bad_api)
+						continue
+					
+					# 否则，一律严查
+					current_score += forbidden_imports[bad_api]
+					found_details.append("☢️ 违禁品检测: 发现底层系统调用 (%s)" % bad_api)
+					
+					# 如果伪装成普通 Mod 却调内核，罪加一等
+					if looks_like_unity_mod and not is_real_harmony:
+						current_score += 50
+						found_details.append("   └─ 伪装警报: 该文件伪装成 Unity Mod，却在调用系统内核！")
+
+	# === 3. 行为逻辑特征扫描 (正则检测) ===
+	# 这一步针对所有文件，且 Harmony 没有豁免权 (Harmony 也不该写 Application.Quit)
 	for pattern in compiled_rules:
 		var regex = compiled_rules[pattern]
-		var matches = regex.search_all(content_cleaned)
-		if matches.size() > 0:
+		# 搜索匹配项
+		var match = regex.search(content_cleaned)
+		if match:
 			var weight = risk_rules[pattern]
-			current_score += weight 
-			found_details.append("%s (+%d)" % [pattern.replace("\\", ""), weight])
+			current_score += weight
 			
+			# 格式化显示名称 (去掉正则转义符)
+			var display_name = pattern.replace("\\", "")
+			found_details.append("⚡ 发现敏感行为: %s (+%d)" % [display_name, weight])
+			
+			# 如果是高危的逻辑炸弹，给出详细警告
+			if weight >= 50:
+				if "Quit" in display_name or "Exit" in display_name:
+					found_details.append("   └─ 警告: 检测到强制退出游戏代码 (逻辑炸弹特征)")
+				elif "SteamID" in display_name:
+					found_details.append("   └─ 警告: 检测到针对 SteamID 的隐私读取行为")
+
 	return {
 		"score": current_score,
 		"details": found_details
