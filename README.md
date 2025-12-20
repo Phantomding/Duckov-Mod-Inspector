@@ -44,7 +44,6 @@
 4.  查看生成的权限仪表盘。
 
 ![Screenshot Placeholder](screenshot.png)
-*(建议在此处放一张软件运行截图)*
 
 ---
 
@@ -85,3 +84,4 @@ DMI 对 `.dll` 二进制文件进行异步静态分析，主要关注以下五�
 如果你发现了新的恶意 Mod 变种，或者 DMI 出现了误报，请提交 Issue 反馈，帮助我们更新规则库。
 
 **Made with ❤️ by Godot Engine**
+
