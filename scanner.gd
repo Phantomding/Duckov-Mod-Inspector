@@ -1,21 +1,28 @@
 extends Control
 
 # ==========================================
-# 🛡️ D.M.I. v1.8.1 - ZIP & Export Ready
+# 🛡️ D.M.I. v1.9.2 - Fix MD5 Error
 # ==========================================
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024 
 var is_scanning = false 
-var all_reports = [] # 🗂️ v1.8.1: 用于缓存所有扫描结果
 
+# 🗂️ 数据存储
+var all_reports = [] 
+var whitelist = {} 
+const WHITELIST_PATH = "user://whitelist.json"
+
+# 🖱️ UI 组件
 var card_scene = preload("res://FileResultCard.tscn")
+var context_menu: PopupMenu 
+var context_target_report = {} 
 
 @onready var status_label = $StatusLabel
 @onready var result_list = $ResultScroll/ResultList 
 
 enum RiskLevel { INFO, WARNING, DANGER, CRITICAL }
 
-# === 权限规则库 (v1.7.1 Final) ===
+# === 🛡️ 权限规则库 ===
 var permission_rules = {
 	"Network": {
 		"System\\.Net": [RiskLevel.INFO, "基础网络库引用"], 
@@ -42,7 +49,6 @@ var permission_rules = {
 		"Environment\\.SpecialFolder": [RiskLevel.WARNING, "枚举系统特殊路径"],
 		"Path\\.GetTempPath": [RiskLevel.INFO, "获取系统临时路径 (常见缓存操作)"],
 		"\\.tmp": [RiskLevel.INFO, "读写临时文件"],
-		
 		"System32": [RiskLevel.CRITICAL, "尝试访问 Windows 系统目录"],
 		"AppData": [RiskLevel.WARNING, "尝试访问 AppData"],
 		"\\.bat": [RiskLevel.DANGER, "涉及批处理脚本"],
@@ -74,7 +80,7 @@ var permission_rules = {
 	}
 }
 
-# === 意图推理库 ===
+# === 🧠 意图推理库 ===
 var intent_rules = {
 	"Local_Service": {
 		"cat_req": "Network",
@@ -106,8 +112,15 @@ var intent_rules = {
 var compiled_rules = {}
 
 func _ready():
-	DisplayServer.window_set_title("D.M.I. v1.8.1 - Universal Mod Audit")
-	# ... (规则编译逻辑保持不变) ...
+	DisplayServer.window_set_title("D.M.I. v1.9.2 - Universal Mod Audit")
+	_load_whitelist()
+	
+	# === 初始化右键菜单 ===
+	context_menu = PopupMenu.new()
+	add_child(context_menu)
+	context_menu.id_pressed.connect(_on_context_menu_item_pressed)
+	
+	# === 编译正则规则 ===
 	for category in permission_rules:
 		compiled_rules[category] = {}
 		for pattern in permission_rules[category]:
@@ -116,9 +129,9 @@ func _ready():
 			compiled_rules[category][pattern] = regex
 	
 	get_viewport().files_dropped.connect(_on_files_dropped)
-	status_label.text = "拖入 Mod (.dll/.zip) | 按 Ctrl+S 导出报告"
+	status_label.text = "拖入 Mod | Ctrl+S 导出 | 右键管理白名单"
 
-# ⌨️ v1.8.1: 监听快捷键导出报告
+# === ⌨️ 快捷键监听 ===
 func _input(event):
 	if event is InputEventKey and event.pressed:
 		if event.keycode == KEY_S and event.ctrl_pressed:
@@ -127,6 +140,7 @@ func _input(event):
 			else:
 				status_label.text = "⚠️ 没有可导出的报告"
 
+# === 🏗️ 主调度逻辑 ===
 func _on_files_dropped(files):
 	if is_scanning: return
 	is_scanning = true
@@ -139,6 +153,7 @@ func _on_files_dropped(files):
 	status_label.text = "正在解析文件列表..."
 	await get_tree().process_frame
 	
+	# 1. 预处理：识别文件类型
 	for path in files:
 		if DirAccess.dir_exists_absolute(path):
 			var dlls = get_all_files(path, ["dll"])
@@ -155,6 +170,7 @@ func _on_files_dropped(files):
 		is_scanning = false
 		return
 		
+	# 2. 执行扫描
 	var total_processed = 0
 	for task in tasks:
 		if task["type"] == "file":
@@ -172,20 +188,228 @@ func _on_files_dropped(files):
 		
 		if total_processed % 3 == 0: await get_tree().process_frame
 			
-	status_label.text = "审计完成! 按 Ctrl+S 导出报告到桌面"
+	status_label.text = "审计完成! (右键结果可管理信任)"
 	is_scanning = false
 
 func add_report_card(report: Dictionary):
-	all_reports.append(report) # 🗂️ 存入缓存
+	all_reports.append(report)
 	var card = card_scene.instantiate()
 	result_list.add_child(card)
+	
+	# 📡 连接菜单请求信号
+	card.request_context_menu.connect(_on_card_request_menu)
+	
 	card.setup(report)
 
-# === 📝 v1.8.1: 导出报告核心逻辑 ===
+# === 📂 硬盘文件扫描 ===
+func scan_single_file(path: String) -> Dictionary:
+	var file_obj = FileAccess.open(path, FileAccess.READ)
+	if not file_obj: return make_error_report(path.get_file(), "无法读取文件")
+	
+	var file_len = file_obj.get_length()
+	if file_len > MAX_FILE_SIZE:
+		return make_error_report(path.get_file(), "文件过大 (>50MB)")
+
+	var content_bytes = file_obj.get_buffer(file_len)
+	return await analyze_bytes(content_bytes, path.get_file())
+
+# === 📦 ZIP 内存扫描 ===
+func scan_zip_archive(zip_path: String) -> Array:
+	var reports = []
+	var reader = ZIPReader.new()
+	var err = reader.open(zip_path)
+	
+	if err != OK:
+		reports.append(make_error_report(zip_path.get_file(), "ZIP 损坏或无法打开"))
+		return reports
+		
+	var files = reader.get_files()
+	for file_path in files:
+		if file_path.get_extension().to_lower() == "dll":
+			var content_bytes = reader.read_file(file_path)
+			var display_name = zip_path.get_file() + " ➡️ " + file_path.get_file()
+			var report = await analyze_bytes(content_bytes, display_name)
+			reports.append(report)
+			await get_tree().process_frame 
+			
+	reader.close()
+	if reports.size() == 0:
+		reports.append(make_error_report(zip_path.get_file(), "ZIP 内未找到 DLL"))
+	return reports
+
+# === 🧠 核心分析引擎 (通用) ===
+func analyze_bytes(bytes: PackedByteArray, filename: String) -> Dictionary:
+	# 1. 计算指纹与白名单 (⚡️ 修复点：使用 HashingContext)
+	var md5 = get_md5_from_bytes(bytes)
+	var is_whitelisted = whitelist.has(md5)
+	
+	var analysis = await extract_readable_text_async(bytes)
+	var content = analysis["text"]
+	var entropy = analysis["entropy"]
+	
+	# 2. 智能抗误报
+	var is_obfuscated = false
+	var is_resource_heavy = false
+	
+	if entropy > 7.2:
+		var csharp_signatures = ["<Module>", "mscorlib", "System.Private.CoreLib", "System.Void", "k__BackingField", "RuntimeCompatibilityAttribute"]
+		var signature_hits = 0
+		for sig in csharp_signatures:
+			if sig in content: signature_hits += 1
+		
+		if signature_hits >= 2: is_resource_heavy = true 
+		else: is_obfuscated = true 
+
+	var report = {
+		"filename": filename,
+		"md5": md5, 
+		"is_whitelisted": is_whitelisted, 
+		"entropy": entropy,
+		"is_obfuscated": is_obfuscated,
+		"is_resource_heavy": is_resource_heavy,
+		"permissions": {} 
+	}
+	
+	# 3. 权限扫描
+	for category in compiled_rules:
+		report["permissions"][category] = []
+		var rules = compiled_rules[category]
+		for pattern in rules:
+			var regex = rules[pattern]
+			if regex.search(content):
+				var raw_rule = permission_rules[category][pattern]
+				var item = {
+					"keyword": pattern,
+					"level": raw_rule[0],
+					"desc": raw_rule[1],
+					"intent_note": "",
+					"is_ghost": false
+				}
+				
+				# 意图注入
+				for intent_name in intent_rules:
+					var rule = intent_rules[intent_name]
+					if rule["cat_req"] == category:
+						for ev in rule["evidence"]:
+							if ev in content:
+								item["intent_note"] = rule["desc"]
+								if intent_name == "Local_Service" and item["level"] == RiskLevel.WARNING:
+									item["level"] = RiskLevel.INFO
+								if intent_name == "Reverse_Shell":
+									item["level"] = RiskLevel.CRITICAL
+								break 
+				report["permissions"][category].append(item)
+
+	# 4. 幽灵引用检测
+	var ghost_check_rules = {
+		"Network": {"ref_keyword": "System\\.Net", "activity_level_threshold": RiskLevel.WARNING},
+		"FileSystem": {"ref_keyword": "System\\.IO", "activity_level_threshold": RiskLevel.WARNING},
+		"Reflection": {"ref_keyword": "System\\.Reflection", "activity_level_threshold": RiskLevel.WARNING}
+	}
+	
+	for category in report["permissions"]:
+		var items = report["permissions"][category]
+		if items.size() == 0: continue
+		if not ghost_check_rules.has(category): continue
+		
+		var rule = ghost_check_rules[category]
+		var ref_keyword = rule["ref_keyword"]
+		var has_base_ref = false
+		var base_ref_index = -1
+		
+		for i in range(items.size()):
+			if items[i]["keyword"] == ref_keyword:
+				has_base_ref = true
+				base_ref_index = i
+				break
+		
+		if has_base_ref:
+			var has_activity = false
+			for item in items:
+				if item["keyword"] != ref_keyword:
+					has_activity = true
+					break
+			if not has_activity:
+				var ghost_item = items[base_ref_index]
+				ghost_item["desc"] = "👻 [幽灵引用] 声明了库但未检测到使用 (懒惰作者)"
+				ghost_item["level"] = -1
+				ghost_item["is_ghost"] = true
+
+	return report
+
+# === 🖱️ 右键菜单逻辑 ===
+func _on_card_request_menu(global_pos, report):
+	context_target_report = report 
+	context_menu.clear() 
+	
+	if whitelist.has(report["md5"]):
+		context_menu.add_item("❌ 移除白名单 (Untrust)", 1)
+	else:
+		context_menu.add_item("🛡️ 加入白名单 (Trust File)", 0)
+	
+	context_menu.add_separator()
+	context_menu.add_item("📋 复制 MD5 指纹", 2)
+	context_menu.add_item("📋 复制文件名", 3)
+	
+	context_menu.position = Vector2i(global_pos)
+	context_menu.popup()
+
+func _on_context_menu_item_pressed(id):
+	var md5 = context_target_report["md5"]
+	var filename = context_target_report["filename"]
+	
+	match id:
+		0: # 加入
+			whitelist[md5] = true
+			status_label.text = "🛡️ 已加入信任: " + filename
+			_save_whitelist()
+			_refresh_ui_state()
+		1: # 移除
+			whitelist.erase(md5)
+			status_label.text = "🚫 已取消信任: " + filename
+			_save_whitelist()
+			_refresh_ui_state()
+		2: # 复制 MD5
+			DisplayServer.clipboard_set(md5)
+			status_label.text = "✅ MD5 已复制"
+		3: # 复制文件名
+			DisplayServer.clipboard_set(filename)
+			status_label.text = "✅ 文件名已复制"
+
+# === 🛡️ 白名单 I/O ===
+func _load_whitelist():
+	if FileAccess.file_exists(WHITELIST_PATH):
+		var file = FileAccess.open(WHITELIST_PATH, FileAccess.READ)
+		var text = file.get_as_text()
+		var json = JSON.new()
+		if json.parse(text) == OK:
+			whitelist = json.data
+
+func _save_whitelist():
+	var file = FileAccess.open(WHITELIST_PATH, FileAccess.WRITE)
+	if file:
+		file.store_string(JSON.stringify(whitelist))
+
+func _refresh_ui_state():
+	for report in all_reports:
+		if whitelist.has(report["md5"]):
+			report["is_whitelisted"] = true
+		else:
+			report["is_whitelisted"] = false
+			
+	for child in result_list.get_children():
+		child.queue_free()
+	
+	for report in all_reports:
+		var card = card_scene.instantiate()
+		result_list.add_child(card)
+		card.request_context_menu.connect(_on_card_request_menu)
+		card.setup(report)
+
+# === 📝 导出报告逻辑 ===
 func export_report_to_desktop():
 	var time_str = Time.get_datetime_string_from_system().replace(":", "-")
 	var filename = "DMI_Report_%s.txt" % time_str
-	# 获取桌面路径 (兼容 Windows/Mac/Linux)
 	var desktop_path = OS.get_system_dir(OS.SYSTEM_DIR_DESKTOP) + "/" + filename
 	
 	var file = FileAccess.open(desktop_path, FileAccess.WRITE)
@@ -202,8 +426,13 @@ func export_report_to_desktop():
 	for report in all_reports:
 		file.store_line("----------------------------------------")
 		file.store_line("📄 文件: %s" % report["filename"])
+		file.store_line("🔐 MD5: %s" % report["md5"])
 		
-		# 判断风险等级
+		if report.get("is_whitelisted", false):
+			file.store_line("🛡️ 状态: [已加入白名单/Trusted]")
+			file.store_line("\n")
+			continue
+			
 		var risk_str = "常规 (Info)"
 		if report.get("is_obfuscated", false): risk_str = "⛔️ 高危 (恶意混淆/加密)"
 		else:
@@ -248,158 +477,26 @@ func export_report_to_desktop():
 	
 	file.close()
 	status_label.text = "✅ 报告已导出至桌面: %s" % filename
-	OS.shell_open(desktop_path) # 自动打开生成的文本文件
+	OS.shell_open(desktop_path) 
 
-# === 📂 硬盘文件扫描 ===
-func scan_single_file(path: String) -> Dictionary:
-	var file_obj = FileAccess.open(path, FileAccess.READ)
-	if not file_obj: return make_error_report(path.get_file(), "无法读取文件")
-	
-	var file_len = file_obj.get_length()
-	if file_len > MAX_FILE_SIZE:
-		return make_error_report(path.get_file(), "文件过大 (>50MB)")
-
-	var content_bytes = file_obj.get_buffer(file_len)
-	# ⚡️ 核心改动：把字节流交给通用分析器
-	return await analyze_bytes(content_bytes, path.get_file())
-
-# === 📦 ZIP 内存扫描 (v1.8 New!) ===
-func scan_zip_archive(zip_path: String) -> Array:
-	var reports = []
-	var reader = ZIPReader.new()
-	var err = reader.open(zip_path)
-	
-	if err != OK:
-		reports.append(make_error_report(zip_path.get_file(), "ZIP 损坏或无法打开"))
-		return reports
-		
-	var files = reader.get_files()
-	for file_path in files:
-		# 只扫描 ZIP 里的 .dll 文件
-		if file_path.get_extension().to_lower() == "dll":
-			# 直接在内存中读取，不解压到硬盘
-			var content_bytes = reader.read_file(file_path)
-			
-			# 为了显示友好，文件名显示为 "Mod.zip -> Plugin.dll"
-			var display_name = zip_path.get_file() + " ➡️ " + file_path.get_file()
-			
-			var report = await analyze_bytes(content_bytes, display_name)
-			reports.append(report)
-			
-			await get_tree().process_frame # 避免卡顿
-			
-	reader.close()
-	
-	if reports.size() == 0:
-		reports.append(make_error_report(zip_path.get_file(), "ZIP 内未找到 DLL"))
-		
-	return reports
-
-# === 🧠 核心分析引擎 (通用) ===
-# 无论文件来自硬盘还是 ZIP，最终都由这个函数处理
-func analyze_bytes(bytes: PackedByteArray, filename: String) -> Dictionary:
-	var analysis = await extract_readable_text_async(bytes)
-	var content = analysis["text"]
-	var entropy = analysis["entropy"]
-	
-	# === 智能抗误报 ===
-	var is_obfuscated = false
-	var is_resource_heavy = false
-	
-	if entropy > 7.2:
-		var csharp_signatures = ["<Module>", "mscorlib", "System.Private.CoreLib", "System.Void", "k__BackingField", "RuntimeCompatibilityAttribute"]
-		var signature_hits = 0
-		for sig in csharp_signatures:
-			if sig in content: signature_hits += 1
-		
-		if signature_hits >= 2: is_resource_heavy = true 
-		else: is_obfuscated = true 
-
-	var report = {
-		"filename": filename,
-		"entropy": entropy,
-		"is_obfuscated": is_obfuscated,
-		"is_resource_heavy": is_resource_heavy,
-		"permissions": {} 
-	}
-	
-	# === 权限扫描 ===
-	for category in compiled_rules:
-		report["permissions"][category] = []
-		var rules = compiled_rules[category]
-		for pattern in rules:
-			var regex = rules[pattern]
-			if regex.search(content):
-				var raw_rule = permission_rules[category][pattern]
-				var item = {
-					"keyword": pattern,
-					"level": raw_rule[0],
-					"desc": raw_rule[1],
-					"intent_note": "",
-					"is_ghost": false
-				}
-				
-				# 意图注入
-				for intent_name in intent_rules:
-					var rule = intent_rules[intent_name]
-					if rule["cat_req"] == category:
-						for ev in rule["evidence"]:
-							if ev in content:
-								item["intent_note"] = rule["desc"]
-								if intent_name == "Local_Service" and item["level"] == RiskLevel.WARNING:
-									item["level"] = RiskLevel.INFO
-								if intent_name == "Reverse_Shell":
-									item["level"] = RiskLevel.CRITICAL
-								break 
-				report["permissions"][category].append(item)
-
-	# === 幽灵引用检测 ===
-	var ghost_check_rules = {
-		"Network": {"ref_keyword": "System\\.Net", "activity_level_threshold": RiskLevel.WARNING},
-		"FileSystem": {"ref_keyword": "System\\.IO", "activity_level_threshold": RiskLevel.WARNING},
-		"Reflection": {"ref_keyword": "System\\.Reflection", "activity_level_threshold": RiskLevel.WARNING}
-	}
-	
-	for category in report["permissions"]:
-		var items = report["permissions"][category]
-		if items.size() == 0: continue
-		if not ghost_check_rules.has(category): continue
-		
-		var rule = ghost_check_rules[category]
-		var ref_keyword = rule["ref_keyword"]
-		var has_base_ref = false
-		var base_ref_index = -1
-		
-		for i in range(items.size()):
-			if items[i]["keyword"] == ref_keyword:
-				has_base_ref = true
-				base_ref_index = i
-				break
-		
-		if has_base_ref:
-			var has_activity = false
-			for item in items:
-				if item["keyword"] != ref_keyword:
-					has_activity = true
-					break
-			if not has_activity:
-				var ghost_item = items[base_ref_index]
-				ghost_item["desc"] = "👻 [幽灵引用] 声明了库但未检测到使用 (懒惰作者)"
-				ghost_item["level"] = -1
-				ghost_item["is_ghost"] = true
-
-	return report
-
-# 辅助：生成错误报告
+# === 🛠️ 辅助函数 ===
 func make_error_report(name: String, reason: String) -> Dictionary:
 	return {
 		"filename": name + " (" + reason + ")",
+		"md5": "error",
 		"permissions": {},
 		"entropy": 0,
 		"is_obfuscated": false
 	}
 
-# ... (extract_readable_text_async 和 get_all_files 保持不变) ...
+# ⚡️ 修复的核心：使用 HashingContext 计算 MD5
+func get_md5_from_bytes(bytes: PackedByteArray) -> String:
+	var ctx = HashingContext.new()
+	ctx.start(HashingContext.HASH_MD5)
+	ctx.update(bytes)
+	var res = ctx.finish()
+	return res.hex_encode()
+
 func extract_readable_text_async(bytes: PackedByteArray) -> Dictionary:
 	var size = bytes.size()
 	var chunk_size = 100000 
