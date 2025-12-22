@@ -3,7 +3,7 @@
 >
 > **"See what your mods can do." (看看你的 Mod 到底能干什么)**
 
-![Version](https://img.shields.io/badge/version-1.6.1-blue) ![Platform](https://img.shields.io/badge/platform-Windows-blue) ![License](https://img.shields.io/badge/license-MIT-green)
+![Version](https://img.shields.io/badge/version-1.9-blue) ![Platform](https://img.shields.io/badge/platform-Windows-blue) ![License](https://img.shields.io/badge/license-MIT-green)
 
 **D.M.I.** 是一个针对 Unity/C# 游戏模组（Mods）的**静态行为审计工具**。
 
@@ -13,36 +13,39 @@
 
 ---
 
-## ✨ v1.6.1 核心特性 (New!)
+## ✨ v1.9 核心更新 (Major Update)
 
-### 1. 👻 幽灵引用检测 (Ghost Reference)
-**告别虚假焦虑。**
-很多 Mod 作者因为使用通用模板，会声明 `System.Net` 等高危库但实际并未编写任何联网代码。
-- D.M.I. 能自动识别这种“懒惰作者”行为，并将这些未使用的权限标记为**灰色幽灵图标** (👻)，让你一眼排除误报。
+### 1. 🛡️ 本地信任/白名单系统 (Trust System)
+**告别重复报警。**
+对于 `BepInEx.dll`, `0Harmony.dll` 等核心库，你不再需要每次都忍受黄色警告。
+* **操作**：在结果卡片上 **右键点击** -> 选择 **"🛡️ 加入白名单"**。
+* **安全**：基于文件 **MD5 指纹** 校验。只有文件内容完全一致时才会通过，改名无效，杜绝病毒伪装。
 
-### 2. 📦 智能抗误报 (Smart Entropy)
-**不再“一刀切”。**
-传统工具常将包含大量图片/数据的 Mod 误判为“加密混淆”。
-- D.M.I. 引入了二次核查算法。如果检测到高熵值但保留了清晰的代码特征，会标记为 **[📦 体积较大/Resource Heavy]** 而非高危混淆。
+### 2. 📦 压缩包直扫 (ZIP Direct Scan)
+**省去解压麻烦。**
+现在支持直接拖入 `.zip` 文件！
+* D.M.I. 会在内存中直接读取压缩包内的 DLL 进行审计，无需解压到硬盘，方便快捷。
 
-### 3. 🧠 意图推理引擎 (Context Engine)
-单纯的“联网权限”并不可怕，可怕的是它连去哪。
-- **智能分析**：如果检测到 `Socket` + `127.0.0.1`，DMI 会告诉你这是**“本地小地图服务”**。
-- **风险识别**：如果检测到 `Socket` + `cmd.exe`，DMI 会报警这是**“远程控制木马”**。
-
-### 4. 📱 现代化仪表盘
-引入卡片式设计与行内注解 (Inline Context)，将复杂的代码行为翻译为人类可读的风险提示。
+### 3. 📝 审计报告导出 (Export Evidence)
+**方便社区交流与挂人。**
+* **快捷键**：按下 **`Ctrl + S`**。
+* D.M.I. 会在桌面生成一份格式化的 `.txt` 体检报告，包含详细的风险评级和 MD5 指纹。
 
 ---
 
-## 🚀 如何使用
+## 🔥 核心特性
 
-1.  下载最新版本的 `D.M.I.exe`。
-2.  运行程序。
-3.  将你下载的 **Mod 文件夹** 或 **.dll 文件** 直接拖入 DMI 窗口。
-4.  查看生成的权限审计报告。
+### 👻 幽灵引用检测 (Ghost Reference)
+很多 Mod 作者因为使用通用模板，会声明 `System.Net` 等高危库但实际并未编写任何联网代码。
+* D.M.I. 能自动识别这种“懒惰作者”行为，并将这些未使用的权限标记为**灰色幽灵图标** (👻)，让你一眼排除误报。
 
-![Screenshot Placeholder](screenshot.png)
+### 🧠 意图推理引擎 (Context Engine)
+单纯的“联网权限”并不可怕，可怕的是它连去哪。
+* **智能分析**：发现 Socket + 127.0.0.1 ➡️ 判定为 **[🟢 本地小地图服务]**。
+* **风险识别**：发现 Socket + cmd.exe ➡️ 判定为 **[🚫 远程控制木马]**。
+
+### 📦 智能抗误报 (Smart Entropy)
+* 引入二次核查算法。如果检测到高熵值但保留了清晰的代码特征，会标记为 **[📦 体积较大/Resource Heavy]** 而非高危混淆。
 
 ---
 
@@ -50,24 +53,34 @@
 
 | 状态图标 | 含义 | 建议操作 |
 | :--- | :--- | :--- |
+| 🛡️ **已信任 (Trusted)** | 你已将该文件加入本地白名单。 | **安全** (基于你的判断)。 |
 | 🔵 **功能型 (常规)** | 包含常见 API 调用，如基础文件读写。 | 属于 Mod 正常功能，未发现异常。 |
 | ✅ **未检测出敏感权限** | 扫描未发现任何高危 API 调用。 | 极其干净的代码。 |
 | ⚠️ **需注意 (Warning)** | 包含敏感权限（如读取 SteamID、Socket 连接、反射）。 | **建议人工复核**。确认该 Mod 的功能是否需要这些权限。 |
 | 🚫 **高风险 (Danger)** | 发现明确的恶意特征（如 Webhook 偷号、挖矿、IP 追踪）或恶意混淆。 | **建议立即删除**。除非你完全信任该作者。 |
 | 👻 **幽灵引用 (Ghost)** | 声明了权限库但未使用。 | **通常安全**。这是作者开发习惯不佳造成的残留。 |
-| 📦 **体积较大 (Resource)** | 包含大量内嵌资源导致熵值升高。 | **低风险**。通常是包含了图片或数据表。 |
 
 ---
 
-## 🔍 技术细节 (For Geeks)
+## 🚀 快速上手
 
-D.M.I. 对 `.dll` 二进制文件进行异步静态分析，主要关注以下五大维度：
+1.  下载并运行 `D.M.I.exe`。
+2.  **拖入文件**：将 Mod 的 `.dll` 文件或 `.zip` 压缩包拖入窗口。
+3.  **查看结果**：阅读权限分析和意图提示。
+4.  **管理信任**：对已知安全的文件 **右键点击** 加入白名单。
+5.  **导出报告**：需要分享结果时，按 **`Ctrl + S`**。
 
-* **🌐 Network (网络)**: 扫描 `HttpClient`, `Socket`, `UnityWebRequest` 及硬编码 URL。
-* **📂 FileSystem (文件)**: 扫描文件读写、删除以及 `Environment.GetFolderPath`（敏感路径）。
-* **⚙️ System (系统)**: 扫描 `Process.Start` (启动外部 EXE), `Registry` (注册表操作)。
-* **🎭 Reflection (反射)**: 扫描 `Method.Invoke`, `Assembly.Load`。
-* **🆔 Privacy (隐私)**: 扫描针对 `SteamID`, `Session`, `Wallet` 等敏感信息的读取操作。
+---
+
+## 🔍 审计维度 (Technical Specs)
+
+D.M.I. 对二进制文件进行异步静态分析，主要关注以下维度：
+
+* **🌐 Network**: `HttpClient`, `Socket`, `UnityWebRequest`, IP/URL 硬编码。
+* **📂 FileSystem**: 文件读写、删除、**系统敏感路径** (System32, AppData, Startup)。
+* **⚙️ System**: `Process.Start` (启动外部 EXE), 注册表操作, `.bat/.cmd` 脚本生成。
+* **🎭 Reflection**: `Method.Invoke`, `Assembly.Load` (内存加载 Payload)。
+* **🆔 Privacy**: 针对 `SteamID`、`Steamworks`、`user.cfg` 等隐私数据的读取。
 
 ---
 
@@ -81,8 +94,7 @@ D.M.I. 对 `.dll` 二进制文件进行异步静态分析，主要关注以下�
 
 ## 🤝 贡献与反馈
 
-本项目旨在为玩家社区建立第一道防线。 
+本项目旨在为玩家社区建立第一道防线。
 如果你发现了新的恶意 Mod 变种，或者 D.M.I. 出现了误报，请提交 Issue 反馈，帮助我们更新规则库。
 
 **Made with ❤️ by Godot Engine**
-
