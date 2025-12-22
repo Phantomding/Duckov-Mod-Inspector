@@ -1,11 +1,12 @@
 extends Control
 
 # ==========================================
-# 🛡️ D.M.I. v1.7 - Targeted Reinforcement
+# 🛡️ D.M.I. v1.8.1 - ZIP & Export Ready
 # ==========================================
 
-const MAX_FILE_SIZE = 20 * 1024 * 1024 
+const MAX_FILE_SIZE = 50 * 1024 * 1024 
 var is_scanning = false 
+var all_reports = [] # 🗂️ v1.8.1: 用于缓存所有扫描结果
 
 var card_scene = preload("res://FileResultCard.tscn")
 
@@ -14,7 +15,7 @@ var card_scene = preload("res://FileResultCard.tscn")
 
 enum RiskLevel { INFO, WARNING, DANGER, CRITICAL }
 
-# === 权限规则库 (v1.7 升级版) ===
+# === 权限规则库 (v1.7.1 Final) ===
 var permission_rules = {
 	"Network": {
 		"System\\.Net": [RiskLevel.INFO, "基础网络库引用"], 
@@ -39,18 +40,15 @@ var permission_rules = {
 		"GetFiles": [RiskLevel.WARNING, "遍历文件列表"],
 		"Environment\\.GetFolderPath": [RiskLevel.WARNING, "获取系统敏感路径 (如文档/桌面)"],
 		"Environment\\.SpecialFolder": [RiskLevel.WARNING, "枚举系统特殊路径"],
-		
-		# 👇 修正点：Temp 降级为 INFO，因为它太常见了 (如 Harmony 缓存)
 		"Path\\.GetTempPath": [RiskLevel.INFO, "获取系统临时路径 (常见缓存操作)"],
 		"\\.tmp": [RiskLevel.INFO, "读写临时文件"],
 		
-		# 👇 真正的威胁交给这些特征去抓：
 		"System32": [RiskLevel.CRITICAL, "尝试访问 Windows 系统目录"],
 		"AppData": [RiskLevel.WARNING, "尝试访问 AppData"],
 		"\\.bat": [RiskLevel.DANGER, "涉及批处理脚本"],
 		"\\.cmd": [RiskLevel.DANGER, "涉及脚本执行"],
 		"\\.vbs": [RiskLevel.DANGER, "涉及 VBS 脚本"],
-		"\\.exe": [RiskLevel.DANGER, "涉及可执行文件操作"] # v1.7.1 补充
+		"\\.exe": [RiskLevel.DANGER, "涉及可执行文件操作"]
 	},
 	"System": {
 		"Process\\.Start": [RiskLevel.DANGER, "启动外部进程 (CMD/EXE)"],
@@ -65,14 +63,13 @@ var permission_rules = {
 		"Type\\.GetType": [RiskLevel.WARNING, "动态获取类型 (可能用于隐藏目标)"]
 	},
 	"Privacy": {
-		# 👇 v1.7: 大幅增强对 SteamID 和隐私文件的检测
 		"SteamId": [RiskLevel.WARNING, "读取 SteamID"],
 		"CSteamID": [RiskLevel.WARNING, "Steam 身份结构"],
-		"Steamworks": [RiskLevel.WARNING, "引用 Steamworks API (可能获取玩家身份)"], # v1.7
-		"GetSteamID": [RiskLevel.WARNING, "尝试获取 Steam ID"], # v1.7
-		"SteamUser": [RiskLevel.WARNING, "访问 Steam 用户数据"], # v1.7
-		"user\\.cfg": [RiskLevel.WARNING, "尝试读取用户配置文件"], # v1.7 (塔科夫常见)
-		"storage\\.json": [RiskLevel.WARNING, "尝试读取存档数据"], # v1.7
+		"Steamworks": [RiskLevel.WARNING, "引用 Steamworks API (可能获取玩家身份)"],
+		"GetSteamID": [RiskLevel.WARNING, "尝试获取 Steam ID"],
+		"SteamUser": [RiskLevel.WARNING, "访问 Steam 用户数据"],
+		"user\\.cfg": [RiskLevel.WARNING, "尝试读取用户配置文件"],
+		"storage\\.json": [RiskLevel.WARNING, "尝试读取存档数据"],
 		"wallet": [RiskLevel.DANGER, "包含钱包/支付关键词"]
 	}
 }
@@ -109,7 +106,8 @@ var intent_rules = {
 var compiled_rules = {}
 
 func _ready():
-	DisplayServer.window_set_title("D.M.I. v1.7 - Universal Mod Audit")
+	DisplayServer.window_set_title("D.M.I. v1.8.1 - Universal Mod Audit")
+	# ... (规则编译逻辑保持不变) ...
 	for category in permission_rules:
 		compiled_rules[category] = {}
 		for pattern in permission_rules[category]:
@@ -118,58 +116,193 @@ func _ready():
 			compiled_rules[category][pattern] = regex
 	
 	get_viewport().files_dropped.connect(_on_files_dropped)
-	status_label.text = "将 Mod (.dll) 拖入此处查看权限仪表盘"
+	status_label.text = "拖入 Mod (.dll/.zip) | 按 Ctrl+S 导出报告"
+
+# ⌨️ v1.8.1: 监听快捷键导出报告
+func _input(event):
+	if event is InputEventKey and event.pressed:
+		if event.keycode == KEY_S and event.ctrl_pressed:
+			if all_reports.size() > 0:
+				export_report_to_desktop()
+			else:
+				status_label.text = "⚠️ 没有可导出的报告"
 
 func _on_files_dropped(files):
 	if is_scanning: return
 	is_scanning = true
+	all_reports.clear() # 清空旧数据
 	
 	for child in result_list.get_children():
 		child.queue_free()
 	
-	var all_files = []
+	var tasks = [] 
 	status_label.text = "正在解析文件列表..."
 	await get_tree().process_frame
 	
 	for path in files:
 		if DirAccess.dir_exists_absolute(path):
-			all_files.append_array(get_all_files(path, ["dll"]))
-		elif path.get_extension().to_lower() == "dll":
-			all_files.append(path)
+			var dlls = get_all_files(path, ["dll"])
+			for d in dlls: tasks.append({"path": d, "type": "file"})
+		else:
+			var ext = path.get_extension().to_lower()
+			if ext == "dll":
+				tasks.append({"path": path, "type": "file"})
+			elif ext == "zip":
+				tasks.append({"path": path, "type": "zip"}) 
 			
-	if all_files.size() == 0:
-		status_label.text = "❌ 未找到 .dll 文件"
+	if tasks.size() == 0:
+		status_label.text = "❌ 未找到支持的文件 (.dll / .zip)"
 		is_scanning = false
 		return
 		
-	var total_scanned = 0
-	for file_path in all_files:
-		total_scanned += 1
-		status_label.text = "正在审计: %d / %d" % [total_scanned, all_files.size()]
-		if total_scanned % 5 == 0: await get_tree().process_frame
-		
-		var report = await scan_single_file(file_path)
-		var card = card_scene.instantiate()
-		result_list.add_child(card)
-		card.setup(report) 
+	var total_processed = 0
+	for task in tasks:
+		if task["type"] == "file":
+			total_processed += 1
+			status_label.text = "正在审计: %s" % task["path"].get_file()
+			var report = await scan_single_file(task["path"])
+			add_report_card(report)
 			
-	status_label.text = "审计完成 (共 %d 个文件)" % total_scanned
+		elif task["type"] == "zip":
+			status_label.text = "正在解压分析: %s" % task["path"].get_file()
+			var reports = await scan_zip_archive(task["path"])
+			for report in reports:
+				total_processed += 1
+				add_report_card(report)
+		
+		if total_processed % 3 == 0: await get_tree().process_frame
+			
+	status_label.text = "审计完成! 按 Ctrl+S 导出报告到桌面"
 	is_scanning = false
 
+func add_report_card(report: Dictionary):
+	all_reports.append(report) # 🗂️ 存入缓存
+	var card = card_scene.instantiate()
+	result_list.add_child(card)
+	card.setup(report)
+
+# === 📝 v1.8.1: 导出报告核心逻辑 ===
+func export_report_to_desktop():
+	var time_str = Time.get_datetime_string_from_system().replace(":", "-")
+	var filename = "DMI_Report_%s.txt" % time_str
+	# 获取桌面路径 (兼容 Windows/Mac/Linux)
+	var desktop_path = OS.get_system_dir(OS.SYSTEM_DIR_DESKTOP) + "/" + filename
+	
+	var file = FileAccess.open(desktop_path, FileAccess.WRITE)
+	if not file:
+		status_label.text = "❌ 导出失败: 无法写入桌面文件"
+		return
+	
+	file.store_line("========================================")
+	file.store_line("🛡️ D.M.I. Mod 安全审计报告")
+	file.store_line("生成时间: %s" % Time.get_datetime_string_from_system())
+	file.store_line("共审计文件: %d 个" % all_reports.size())
+	file.store_line("========================================\n")
+	
+	for report in all_reports:
+		file.store_line("----------------------------------------")
+		file.store_line("📄 文件: %s" % report["filename"])
+		
+		# 判断风险等级
+		var risk_str = "常规 (Info)"
+		if report.get("is_obfuscated", false): risk_str = "⛔️ 高危 (恶意混淆/加密)"
+		else:
+			var max_risk = 0
+			for cat in report["permissions"]:
+				for item in report["permissions"][cat]:
+					if not item.get("is_ghost", false) and item["level"] > max_risk:
+						max_risk = item["level"]
+			
+			if max_risk == RiskLevel.CRITICAL: risk_str = "⛔️ 极高风险 (Critical)"
+			elif max_risk == RiskLevel.DANGER: risk_str = "🚫 高风险 (Danger)"
+			elif max_risk == RiskLevel.WARNING: risk_str = "⚠️ 需注意 (Warning)"
+			elif max_risk == RiskLevel.INFO: risk_str = "🔵 常规 (Info)"
+			else: risk_str = "✅ 未检测出敏感权限"
+		
+		if report.get("is_resource_heavy", false):
+			risk_str += " [📦 资源包]"
+			
+		file.store_line("📊 评级: %s" % risk_str)
+		file.store_line("🎲 熵值: %.2f" % report["entropy"])
+		
+		var has_content = false
+		for cat in report["permissions"]:
+			var items = report["permissions"][cat]
+			if items.size() > 0:
+				has_content = true
+				file.store_line("\n  [%s 权限详情]" % cat)
+				for item in items:
+					var prefix = "   • "
+					if item.get("is_ghost", false): prefix = "   👻 [幽灵] "
+					elif item["level"] >= RiskLevel.DANGER: prefix = "   🚫 "
+					elif item["level"] == RiskLevel.WARNING: prefix = "   ⚠️ "
+					
+					file.store_line("%s%s (%s)" % [prefix, item["desc"], item["keyword"]])
+					if item.get("intent_note", "") != "":
+						file.store_line("     └─ 💡 %s" % item["intent_note"])
+		
+		if not has_content:
+			file.store_line("\n  (未检测出敏感权限)")
+			
+		file.store_line("\n")
+	
+	file.close()
+	status_label.text = "✅ 报告已导出至桌面: %s" % filename
+	OS.shell_open(desktop_path) # 自动打开生成的文本文件
+
+# === 📂 硬盘文件扫描 ===
 func scan_single_file(path: String) -> Dictionary:
 	var file_obj = FileAccess.open(path, FileAccess.READ)
-	if not file_obj: return {"filename": path.get_file(), "permissions": {}, "entropy": 0}
+	if not file_obj: return make_error_report(path.get_file(), "无法读取文件")
 	
 	var file_len = file_obj.get_length()
 	if file_len > MAX_FILE_SIZE:
-		return {"filename": path.get_file() + " (过大)", "permissions": {}, "entropy": 0}
+		return make_error_report(path.get_file(), "文件过大 (>50MB)")
 
 	var content_bytes = file_obj.get_buffer(file_len)
-	var analysis = await extract_readable_text_async(content_bytes)
+	# ⚡️ 核心改动：把字节流交给通用分析器
+	return await analyze_bytes(content_bytes, path.get_file())
+
+# === 📦 ZIP 内存扫描 (v1.8 New!) ===
+func scan_zip_archive(zip_path: String) -> Array:
+	var reports = []
+	var reader = ZIPReader.new()
+	var err = reader.open(zip_path)
+	
+	if err != OK:
+		reports.append(make_error_report(zip_path.get_file(), "ZIP 损坏或无法打开"))
+		return reports
+		
+	var files = reader.get_files()
+	for file_path in files:
+		# 只扫描 ZIP 里的 .dll 文件
+		if file_path.get_extension().to_lower() == "dll":
+			# 直接在内存中读取，不解压到硬盘
+			var content_bytes = reader.read_file(file_path)
+			
+			# 为了显示友好，文件名显示为 "Mod.zip -> Plugin.dll"
+			var display_name = zip_path.get_file() + " ➡️ " + file_path.get_file()
+			
+			var report = await analyze_bytes(content_bytes, display_name)
+			reports.append(report)
+			
+			await get_tree().process_frame # 避免卡顿
+			
+	reader.close()
+	
+	if reports.size() == 0:
+		reports.append(make_error_report(zip_path.get_file(), "ZIP 内未找到 DLL"))
+		
+	return reports
+
+# === 🧠 核心分析引擎 (通用) ===
+# 无论文件来自硬盘还是 ZIP，最终都由这个函数处理
+func analyze_bytes(bytes: PackedByteArray, filename: String) -> Dictionary:
+	var analysis = await extract_readable_text_async(bytes)
 	var content = analysis["text"]
 	var entropy = analysis["entropy"]
 	
-	# === 智能抗误报逻辑 (v1.6) ===
+	# === 智能抗误报 ===
 	var is_obfuscated = false
 	var is_resource_heavy = false
 	
@@ -179,11 +312,11 @@ func scan_single_file(path: String) -> Dictionary:
 		for sig in csharp_signatures:
 			if sig in content: signature_hits += 1
 		
-		if signature_hits >= 2: is_resource_heavy = true # 资源包
-		else: is_obfuscated = true # 恶意混淆
+		if signature_hits >= 2: is_resource_heavy = true 
+		else: is_obfuscated = true 
 
 	var report = {
-		"filename": path.get_file(),
+		"filename": filename,
 		"entropy": entropy,
 		"is_obfuscated": is_obfuscated,
 		"is_resource_heavy": is_resource_heavy,
@@ -206,7 +339,7 @@ func scan_single_file(path: String) -> Dictionary:
 					"is_ghost": false
 				}
 				
-				# 行内意图注入
+				# 意图注入
 				for intent_name in intent_rules:
 					var rule = intent_rules[intent_name]
 					if rule["cat_req"] == category:
@@ -220,7 +353,7 @@ func scan_single_file(path: String) -> Dictionary:
 								break 
 				report["permissions"][category].append(item)
 
-	# === 👻 幽灵引用检测 (v1.6) ===
+	# === 幽灵引用检测 ===
 	var ghost_check_rules = {
 		"Network": {"ref_keyword": "System\\.Net", "activity_level_threshold": RiskLevel.WARNING},
 		"FileSystem": {"ref_keyword": "System\\.IO", "activity_level_threshold": RiskLevel.WARNING},
@@ -252,11 +385,21 @@ func scan_single_file(path: String) -> Dictionary:
 			if not has_activity:
 				var ghost_item = items[base_ref_index]
 				ghost_item["desc"] = "👻 [幽灵引用] 声明了库但未检测到使用 (懒惰作者)"
-				ghost_item["level"] = -1 # 幽灵级别
+				ghost_item["level"] = -1
 				ghost_item["is_ghost"] = true
 
 	return report
 
+# 辅助：生成错误报告
+func make_error_report(name: String, reason: String) -> Dictionary:
+	return {
+		"filename": name + " (" + reason + ")",
+		"permissions": {},
+		"entropy": 0,
+		"is_obfuscated": false
+	}
+
+# ... (extract_readable_text_async 和 get_all_files 保持不变) ...
 func extract_readable_text_async(bytes: PackedByteArray) -> Dictionary:
 	var size = bytes.size()
 	var chunk_size = 100000 
